@@ -97,7 +97,7 @@ var circuitIDLock = &sync.RWMutex{}
 
 type HeartBeats struct {
 	sync.RWMutex
-	// Key is address
+	// Key is IP address
 	HeartBeatMap map[string]string
 }
 
@@ -114,7 +114,7 @@ var responseChannel chan []byte = make(chan []byte)
 // A channel that receives signals to refresh the circuit
 var refreshChannel = make(chan bool, 1)
 
-// A global to store the topology of the circuit
+// A global variable to store the topology of the circuit
 // for demo purposes only
 var circuitTopology string
 
@@ -227,17 +227,9 @@ func (clinetNode *ClientNode) UnlinkFromNetwork() {
 /* ==========================    OnionRPC API Method    ========================== */
 // OnionHeartBeat ... Sends heartbeat to entry onion node
 func (t *OnionRPC) OnionHeartBeat(address string, output *bool) error {
-	/* pubKey, err := encryption.RSAKeyToString(publicKey)
-
-	if err != nil {
-		fmt.Println("Onionlib is unable to convert rsa key to string")
-		return err
-	} */
-
 	timeStamp := time.Now().UnixNano()
 	entryNodeHeartBeats.Lock()
-	//fmt.Println("[" + time.Now().Format(time.RFC3339Nano) + "]" + address + " ... pinged me")
-	//fmt.Println()
+	//fmt.Println("[" + time.Now().Format(time.RFC3339Nano) + "]" + address + " ... pinged me\n")
 	entryNodeHeartBeats.HeartBeatMap[address] = timeStamp
 	entryNodeHeartBeats.Unlock()
 	return nil
@@ -245,10 +237,10 @@ func (t *OnionRPC) OnionHeartBeat(address string, output *bool) error {
 
 // SendResponse ... RPC method for entry onion node to contact Onionlib
 func (t *OnionRPC) SendResponse(input resource.ResponseMessage, output *bool) error {
-
 	circuitIDLock.RLock()
 	isResponseForCircuit := circuitID == input.CircuitID
 	circuitIDLock.RUnlock()
+
 	if isResponseForCircuit {
 		responseChannel <- input.Data
 	}
@@ -257,7 +249,6 @@ func (t *OnionRPC) SendResponse(input resource.ResponseMessage, output *bool) er
 
 // SendError ... RPC method to receive TRUNCATED message from entry onion node
 func (t *OnionRPC) SendError(input resource.ResponseMessage, output *bool) error {
-
 	circuitIDLock.RLock()
 	isErrorForCircuit := circuitID == input.CircuitID
 	fmt.Println("CIRCUITID:", circuitID)
@@ -272,20 +263,22 @@ func (t *OnionRPC) SendError(input resource.ResponseMessage, output *bool) error
 
 		decryptedData, err := decryptOnionPacket(input.Data, -1, "sendResponse")
 		if err != nil {
-			fmt.Println("LOL WTF")
+			fmt.Println("[ERROR] SendError: unable to decrypt onion packet")
+
 			if len(refreshChannel) != 1 {
-				fmt.Println("dddddd", len(refreshChannel))
+				fmt.Println("current length of refresh channel", len(refreshChannel))
 				refreshChannel <- true
 			}
 			return nil
 		}
+
 		decodedData := cells.DecodeRelayCell(decryptedData)
 		cmd := decodedData.Command
 
 		if cmd == cells.TRUNCATED {
 			print.Info(print.ONIONLIB, "SendError", "Received TRUNCATED message from onion node, onion node truncated is", decodedData.Target)
 			if len(refreshChannel) != 1 {
-				fmt.Println("wwwwwwww", len(refreshChannel))
+				fmt.Println("current length of refresh channel", len(refreshChannel))
 				refreshChannel <- true
 			}
 		} else {
@@ -308,7 +301,6 @@ func periodicRefreshTracker() {
 		if currentTime-refreshStatus.timeSinceCircuitLastBuilt > int64(refreshInterval) {
 			print.Info(print.ONIONLIB, "periodicRefreshTracker", "Force refresh of circuit", nil)
 			currentCircuit.Lock()
-			fmt.Println("I MADE IT")
 			err := refreshCircuit()
 			currentCircuit.Unlock()
 			print.Error(print.ONIONLIB, err, "periodicRefreshTracker")
@@ -318,12 +310,9 @@ func periodicRefreshTracker() {
 
 // Helper function to refresh the circuit
 func refreshCircuit() error {
-
 	print.Info(print.ONIONLIB, "refreshCircuit", "Refreshing circuit...", nil)
-
 	currentTime := time.Now().UnixNano()
 	refreshInterval := time.Duration(clientNode.TimeoutForceRefresh) * time.Second
-
 	isRecentlyRefresh := currentTime-refreshStatus.timeSinceCircuitLastBuilt < int64(refreshInterval/2)
 	isCircuitUp := len(currentCircuit.circuitMap) == clientNode.MinNodes
 
@@ -339,7 +328,7 @@ func refreshCircuit() error {
 		destroyCircuit()
 	}
 
-	//let circuit stabilize
+	// Let circuit stabilize
 	//	time.Sleep(time.Duration(clientNode.TimeoutRefresh) * time.Second)
 
 	print.Info(print.ONIONLIB, "refreshCircuit", "create a new circuit", nil)
@@ -357,11 +346,10 @@ func refreshCircuit() error {
 // Routine to check onionlib's heartbeat with the entry node periodically
 func checkEntryNodeHeartBeats(entryNode resource.OnionInfo) {
 	address := entryNode.Address.String()
-
 	heartBeatInterval := time.Duration(resource.HeartBeat) * time.Millisecond
 	time.Sleep(heartBeatInterval)
+
 	for {
-		// TODO: UNCOMMENT PRINTS TO SEE HEARTBEATS
 		// fmt.Println("Hello Entry Node", address)
 		entryNodeHeartBeats.Lock()
 		oldTimeStamp, exist := entryNodeHeartBeats.HeartBeatMap[address]
@@ -373,12 +361,9 @@ func checkEntryNodeHeartBeats(entryNode resource.OnionInfo) {
 		currTimeStamp := time.Now().UnixNano()
 
 		if currTimeStamp-oldTimeStamp > int64(heartBeatInterval) {
-			// TODO: UNCOMMENT PRINTS TO SEE HEARTBEATS
 			//fmt.Println("Goodbye ", address)
 			delete(entryNodeHeartBeats.HeartBeatMap, address)
-
 			entryNodeHeartBeats.Unlock()
-
 			return
 		}
 
@@ -408,11 +393,11 @@ func sendOnionNodeHeartBeat(nodeConnection *rpc.Client, clientNodeAddr, entryNod
 				// Send heartbeat to entry node
 				entryNodeHeartBeats.RUnlock()
 				//fmt.Println("["+time.Now().Format(time.RFC3339Nano)+"]"+"Pinging ...", entryNodeAddr)
-				//fmt.Println()
 				err := nodeConnection.Call("OnionRPC.OnionHeartBeat", clientNodeAddr, &output)
 				if err != nil {
 					fmt.Println("["+time.Now().Format(time.RFC3339Nano)+"]"+"Unable to ping ...", entryNodeAddr)
 				}
+
 				time.Sleep(heartBeatInterval * time.Millisecond)
 			} else {
 				// Remove entry node from the senderHeartBeat map
@@ -440,9 +425,7 @@ func sendOnionNodeHeartBeat(nodeConnection *rpc.Client, clientNodeAddr, entryNod
 
 /* ==========================    GET Request Helpers   ========================== */
 func getRequestHelper(destAddress string, currentRetry int) ([]byte, error) {
-
 	exitNode, exists := currentCircuit.circuitMap[clientNode.MinNodes-1]
-
 	if !exists {
 		return nil, errorlib.RetryError(destAddress)
 	}
@@ -451,14 +434,12 @@ func getRequestHelper(destAddress string, currentRetry int) ([]byte, error) {
 
 	if streamID, ok := streamDirectory.streamMap[destAddress]; ok {
 		dataToReturn, err := handleDataRequest(streamID, targetAddress, destAddress)
-
 		if err != nil {
 			return nil, err
 		}
 
 		return dataToReturn, nil
 	} else {
-
 		//Generate id
 		streamID := randomGenerator()
 
@@ -468,7 +449,6 @@ func getRequestHelper(destAddress string, currentRetry int) ([]byte, error) {
 			return nil, err
 		}
 
-		//Get reply
 		responseData, err := receiveResponse(destAddress)
 		if err != nil {
 			return nil, err
@@ -491,11 +471,8 @@ func getRequestHelper(destAddress string, currentRetry int) ([]byte, error) {
 
 		//Add stream to directory and return data
 		streamDirectory.streamMap[destAddress] = streamID
-
 		fmt.Printf("StreamID: %s\n", streamID)
-
 		dataToReturn, err := handleDataRequest(streamID, targetAddress, destAddress)
-
 		if err != nil {
 			return nil, err
 		}
@@ -505,7 +482,6 @@ func getRequestHelper(destAddress string, currentRetry int) ([]byte, error) {
 }
 
 func receiveResponse(destAddress string) (data []byte, err error) {
-
 	select {
 	case responseData := <-responseChannel:
 		return responseData, nil
@@ -520,7 +496,6 @@ func receiveResponse(destAddress string) (data []byte, err error) {
 }
 
 func sendRelayCellHelper(command cells.OnionCommand, streamID, target string, dataToSend []byte, index int) error {
-
 	//1 Create Relay Cell Begin
 	exitNode, exists := currentCircuit.circuitMap[clientNode.MinNodes-1]
 
@@ -529,6 +504,7 @@ func sendRelayCellHelper(command cells.OnionCommand, streamID, target string, da
 	}
 
 	relayCell := cells.EncodeRelayCell(command, streamID, exitNode.Addr.String(), dataToSend)
+
 	//2 Encrypt Onion
 	onionPacket, err := encryptOnionPacket(relayCell, index)
 	if err != nil {
@@ -549,7 +525,6 @@ func sendRelayCellHelper(command cells.OnionCommand, streamID, target string, da
 		EncryptedData: onionPacket}
 	circuitIDLock.RUnlock()
 	currentCircuit.circuitConnection.Go("OnionRPC.ReceiveRelayMessage", input, &output, nil)
-
 	return nil
 }
 
@@ -566,9 +541,8 @@ func receiveRelayCellHelper(encryptedData []byte) (*cells.RelayCell, error) {
 		return nil, err
 	}
 
-	relayCell := cells.DecodeRelayCell(decryptedData)
-
 	//2 Decode response and get relay cell
+	relayCell := cells.DecodeRelayCell(decryptedData)
 	return &relayCell, nil
 }
 
@@ -584,13 +558,11 @@ func handleDataRequest(streamID, targetAddress, destAddress string) ([]byte, err
 	// Iteratively decrypts and decode data responses from entry node
 	// until the expected total number of packets to be received has reached
 	for {
-		// Get reply
 		responseData, err := receiveResponse(destAddress)
 		if err != nil {
 			return nil, err
 		}
 
-		// Decrypt and get Data
 		relayCell, err := receiveRelayCellHelper(responseData)
 		if err != nil {
 			return nil, err
@@ -637,7 +609,6 @@ func handleDataRequest(streamID, targetAddress, destAddress string) ([]byte, err
 func establishCircuit(topology string) (err error) {
 	var nodes []resource.OnionInfo
 
-	// TODO: give it a finite amount of retries
 	for {
 		nodes, err = getOnionNodesFromServer()
 		if err != nil {
@@ -659,14 +630,6 @@ func establishCircuit(topology string) (err error) {
 	chosenNodes := chooseTopology(nodes, clientNode.MinNodes, topology)
 	mostRecentCircuit = make([]resource.OnionInfo, clientNode.MinNodes)
 	copy(mostRecentCircuit, chosenNodes)
-
-	// Total of 5 nodes, two clients share the middle node
-
-	// TODO: UNCOMMENT FOR FIRST CLIENT NODE
-	//chosenNodes := getXTopology1(nodes, clientNode.MinNodes)
-
-	// TODO: UNCOMMENT FOR SECOND CLIENT NODE
-	//chosenNodes := getXTopology2(nodes, clientNode.MinNodes)
 
 	for i := 0; i < len(chosenNodes); i++ {
 		print.Info(print.ONIONLIB, "establishCircuit", "chosenNodes", chosenNodes[i].Address.String())
@@ -697,8 +660,6 @@ func getOnionNodesFromServer() (nodes []resource.OnionInfo, err error) {
 	var nodesFromServer []resource.OnionInfo
 	err = clientNode.ServerConn.Call("ServerRPC.GetNodes", &input, &nodesFromServer)
 	if err != nil {
-		// Instead of returning an error,
-		// try to connect to a different server
 		connectToAvailableServer()
 		return nil, errorlib.DisconnectedError("server")
 	}
@@ -899,7 +860,6 @@ func keyExchangeWithOnionNodes(chosenNodes []resource.OnionInfo) error {
 			Addr:      target.Address}
 
 		currentCircuit.circuitMap[i] = circuitNode
-
 		print.Info(print.ONIONLIB, "keyExchangeWithOnionNodes", "[CREATE-SUCCESS] address is", circuitNode.Addr)
 	}
 
@@ -911,17 +871,16 @@ func keyExchangeWithOnionNodes(chosenNodes []resource.OnionInfo) error {
 func connectToAvailableServer() {
 	serverAddress, err := resource.ChooseRandomServer()
 	if err != nil {
-		fmt.Println(err) // TODO: replace this with the proper debugging print
+		print.Error(print.ONIONLIB, err, "connectToAvailableServer")
 	}
 
 	err = clientNode.ServerConn.Close()
 	if err != nil {
-		fmt.Println(err) // TODO: replace this with the proper debugging print
+		print.Error(print.ONIONLIB, err, "connectToAvailableServer")
 	}
 
 	serverConnection, err := rpc.Dial("tcp", serverAddress)
 	checkError(err, "connectToAvailableServer: rpc.Dial()")
-
 	clientNode.ServerConn = serverConnection
 }
 
@@ -937,7 +896,7 @@ func truncateCircuitNode(index int) error {
 	onionPacket, err := encryptOnionPacket(onionPacket, index-1)
 	if err != nil {
 		print.Error(print.ONIONLIB, err, "truncateCircuitNode")
-		return err //TODO
+		return err
 	}
 	print.Info(print.ONIONLIB, "truncateCircuitNode", "encrypted packet", onionPacket)
 
@@ -953,23 +912,20 @@ func truncateCircuitNode(index int) error {
 	print.Info(print.ONIONLIB, "truncateCircuitNode", "Received message from entry node ... SUCCESS", nil)
 	if err != nil {
 		print.Error(print.ONIONLIB, err, "truncateCircuitNode")
-		// TODO: make new error
-		return errors.New("Failed to truncate circuit node at " + string(index) + " : " + target.Addr.String())
+		return errorlib.TruncationError(target.Addr.String())
 	}
 
 	// 4. Decrypt onion packet received from entry node
 	decryptedOnion, err := decryptOnionPacket(output.Data, index-1, "truncateCircuitNode")
 	if err != nil {
 		print.Error(print.ONIONLIB, err, "truncateCircuitNode")
-		// TODO: make new error
-		return errors.New("Failed to truncate circuit node at " + string(index) + " : " + target.Addr.String())
+		return errorlib.OnionDecryptionError(target.Addr.String())
 	}
 
 	// 5. Decode decrypted relay cell
 	relayCell := cells.DecodeRelayCell(decryptedOnion)
 	if relayCell.Command != cells.TRUNCATED {
-		// TODO: make new error
-		return errors.New("Failed to truncate circuit node at " + string(index) + " : " + target.Addr.String())
+		return errorlib.InvalidCommandReceivedError(relayCell.Command)
 	}
 
 	// 6. Remove circuit node from the circuit
@@ -1052,10 +1008,8 @@ func encryptOnionPacket(encryptedData []byte, targetIndex int) (onionPacket []by
 // -checks that the onion node sharedkey it decrypted with matches the onion node index expected by the caller
 // -This is to prevent intermediate malicious nodes from dopping the real packet and replacing it with its own
 func decryptOnionPacket(onionPacket []byte, decryptIndex int, function string) (decrypted []byte, err error) {
-	// Iteratively decrypt onion packet with onion node's shared key
-	// starting from the entry node
+	// Iteratively decrypt onion packet with onion node's shared key starting from the entry node
 
-	//print.Info(print.ONIONLIB, "decryptOnionPacket"+function, "decryptIndex", decryptIndex)
 	for i := 0; i < len(currentCircuit.circuitMap); i++ {
 		on := currentCircuit.circuitMap[i]
 		onionPacket, err = encryption.AESEncryptCTR(on.SharedKey, onionPacket, encryption.GenerateIV())
@@ -1237,7 +1191,6 @@ func randomGenerator() string {
 }
 
 func emptyCircuitAndStreams() {
-
 	circuitIDLock.Lock()
 	circuitID = ""
 	circuitIDLock.Unlock()

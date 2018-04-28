@@ -77,10 +77,9 @@ func main() {
 	gob.Register(&net.TCPAddr{})
 	gob.Register(&elliptic.CurveParams{})
 
-	args := os.Args[1:] // store only program arguments in args
+	args := os.Args[1:]
 	if len(args) != 4 {
 		fmt.Println("Usage: go run onion-node.go [server ip:port] [private onion-node ip:port] [public onion-node ip:port] [pemFile]")
-		// fmt.Println("Usage: go run onion-node.go [onion-node ip:port] [pemFile]")
 		os.Exit(1)
 	}
 
@@ -167,9 +166,7 @@ func channelListener(doneCall *rpc.Call) {
 		Data:      dataToSend}
 
 	connectionDirectory.RLock()
-
 	nodeConnection, exist := connectionDirectory.connectionMap[parentCircuitInfo.nodeAddress]
-
 	connectionDirectory.RUnlock()
 
 	if exist {
@@ -251,7 +248,6 @@ func checkOnionHeartBeats(address string) {
 	heartBeatInterval := time.Duration(resource.HeartBeat) * time.Millisecond
 	time.Sleep(heartBeatInterval)
 	for {
-		// TODO: UNCOMMENT PRINTS TO SEE HEARTBEATS
 		// fmt.Println("Hello Onion Node", address)
 		neighbourHeartBeats.RLock()
 		oldTimeStamp, exist := neighbourHeartBeats.HeartBeatMap[address]
@@ -275,7 +271,6 @@ func checkOnionHeartBeats(address string) {
 		}
 
 		if !isAddressInUse {
-
 			nodeConnection, exist := connectionDirectory.connectionMap[address]
 
 			if exist {
@@ -289,9 +284,7 @@ func checkOnionHeartBeats(address string) {
 		}
 
 		if currTimeStamp-oldTimeStamp > int64(heartBeatInterval) {
-
-			allDelete(address)
-			// TODO: UNCOMMENT PRINTS TO SEE HEARTBEATS
+			deleteNodeAllInfo(address)
 			msg := fmt.Sprintf("[%s] disconnected, goodbye!", address)
 			print.Info(print.ONION_NODE, "checkOnionHeartBeats", msg, nil)
 			circuitDirectory.Unlock()
@@ -314,86 +307,81 @@ func (t *OnionRPC) OnionHeartBeat(address string, output *bool) error {
 	return nil
 }
 
-func allDelete(myAddress string) {
-
+func deleteNodeAllInfo(myAddress string) {
 	for circuitIDKey, circuitInfo := range circuitDirectory.circuitMap {
-		if circuitInfo.nodeAddress == myAddress {
+		if circuitInfo.nodeAddress != myAddress {
+			continue
+		}
 
-			if circuitInfo.isParent {
-				fmt.Println("DELETING PARENT")
-				childCircuitInfo, childExists := circuitDirectory.circuitMap[circuitInfo.circuitID]
+		if circuitInfo.isParent {
+			fmt.Println("DELETING PARENT")
+			childCircuitInfo, childExists := circuitDirectory.circuitMap[circuitInfo.circuitID]
 
-				if childExists {
+			if childExists {
+				// 1: Send SendDestroyRequest to child
+				input := resource.RequestMessage{
+					Address:       onionNode.localAddr.String(),
+					CircuitID:     childCircuitInfo.circuitID,
+					IsRelay:       false,
+					EncryptedData: []byte(""),
+				}
+				var output string
+				nodeConnection, exist := connectionDirectory.connectionMap[childCircuitInfo.nodeAddress]
 
-					// 1: Send SendDestroyRequest to child
-					input := resource.RequestMessage{
-						Address:       onionNode.localAddr.String(),
-						CircuitID:     childCircuitInfo.circuitID,
-						IsRelay:       false,
-						EncryptedData: []byte(""),
-					}
-					var output string
-					nodeConnection, exist := connectionDirectory.connectionMap[childCircuitInfo.nodeAddress]
-
-					if exist {
-						nodeConnection.Go("OnionRPC.SendDestroyRequest", input, &output, nil)
-						nodeConnection.Close()
-						delete(connectionDirectory.connectionMap, childCircuitInfo.nodeAddress)
-					}
-
-					delete(circuitDirectory.circuitMap, circuitInfo.circuitID)
+				if exist {
+					nodeConnection.Go("OnionRPC.SendDestroyRequest", input, &output, nil)
+					nodeConnection.Close()
+					delete(connectionDirectory.connectionMap, childCircuitInfo.nodeAddress)
 				}
 
-			} else {
-				fmt.Println("DELETING CHILD")
+				delete(circuitDirectory.circuitMap, circuitInfo.circuitID)
+			}
 
-				parentCircuitInfo, parentExists := circuitDirectory.circuitMap[circuitInfo.circuitID]
+		} else {
+			fmt.Println("DELETING CHILD")
+			parentCircuitInfo, parentExists := circuitDirectory.circuitMap[circuitInfo.circuitID]
 
-				if parentExists {
-
-					// 1: Encode TRUNCATED relay cell
-					relayCell := cells.EncodeRelayCell(cells.TRUNCATED, "", circuitInfo.nodeAddress, []byte(""))
-					// 2: Encrypt Relay cell
-					encrypted, err := encryption.AESEncryptCTR(parentCircuitInfo.sharedKey, relayCell, encryption.GenerateIV())
-					if err != nil {
-						msg := fmt.Sprintf("[%s] received error from AESEncryptCTR, this shouldn't happen!", onionNode.localAddr.String())
-						print.Debug(print.ONION_NODE, "onionNodeDisconnectedHelper", msg, err)
-					}
-
-					// 3: SendError to parent
-					input := resource.ResponseMessage{
-						CircuitID: parentCircuitInfo.circuitID,
-						IsRelay:   true,
-						Data:      encrypted,
-					}
-					var output bool
-
-					nodeConnection, exist := connectionDirectory.connectionMap[parentCircuitInfo.nodeAddress]
-					if exist {
-						nodeConnection.Go("OnionRPC.SendError", input, &output, nil)
-					}
+			if parentExists {
+				// 1: Encode TRUNCATED relay cell
+				relayCell := cells.EncodeRelayCell(cells.TRUNCATED, "", circuitInfo.nodeAddress, []byte(""))
+				// 2: Encrypt Relay cell
+				encrypted, err := encryption.AESEncryptCTR(parentCircuitInfo.sharedKey, relayCell, encryption.GenerateIV())
+				if err != nil {
+					msg := fmt.Sprintf("[%s] received error from AESEncryptCTR, this shouldn't happen!", onionNode.localAddr.String())
+					print.Debug(print.ONION_NODE, "onionNodeDisconnectedHelper", msg, err)
 				}
 
-			}
+				// 3: SendError to parent
+				input := resource.ResponseMessage{
+					CircuitID: parentCircuitInfo.circuitID,
+					IsRelay:   true,
+					Data:      encrypted,
+				}
 
-			nodeConnection, exist := connectionDirectory.connectionMap[myAddress]
-
-			if exist {
-				nodeConnection.Close()
-				delete(connectionDirectory.connectionMap, myAddress)
-			}
-
-			neighbourHeartBeats.Lock()
-			delete(neighbourHeartBeats.HeartBeatMap, myAddress)
-			neighbourHeartBeats.Unlock()
-			delete(circuitDirectory.circuitMap, circuitIDKey)
-
-			for key, _ := range streamDirectory.streamMap {
-				if strings.HasPrefix(key, circuitIDKey) {
-					closeTCPConnection(key)
+				var output bool
+				nodeConnection, exist := connectionDirectory.connectionMap[parentCircuitInfo.nodeAddress]
+				if exist {
+					nodeConnection.Go("OnionRPC.SendError", input, &output, nil)
 				}
 			}
+		}
 
+		nodeConnection, exist := connectionDirectory.connectionMap[myAddress]
+
+		if exist {
+			nodeConnection.Close()
+			delete(connectionDirectory.connectionMap, myAddress)
+		}
+
+		neighbourHeartBeats.Lock()
+		delete(neighbourHeartBeats.HeartBeatMap, myAddress)
+		neighbourHeartBeats.Unlock()
+		delete(circuitDirectory.circuitMap, circuitIDKey)
+
+		for key, _ := range streamDirectory.streamMap {
+			if strings.HasPrefix(key, circuitIDKey) {
+				closeTCPConnection(key)
+			}
 		}
 	}
 }
@@ -405,7 +393,6 @@ func (t *OnionRPC) SendError(input resource.ResponseMessage, output *bool) error
 	circuitDirectory.RUnlock()
 
 	if parentExists {
-
 		// 1: Encrypt relay packet with my shared key
 		encrypted, err := encryption.AESEncryptCTR(parentCircuitInfo.sharedKey, input.Data, encryption.GenerateIV())
 		if err != nil {
@@ -426,14 +413,13 @@ func (t *OnionRPC) SendError(input resource.ResponseMessage, output *bool) error
 			msg := fmt.Sprintf("[%s] does not have a parent onion node, onion node with circuitID [%s] might have disconnected, something might have went wrong", onionNode.localAddr, input.CircuitID)
 			print.Debug(print.ONION_NODE, "SendError1", msg, nil)
 		}
+
 		connectionDirectory.RUnlock()
-
 	} else {
-
 		msg := fmt.Sprintf("[%s] does not have a parent onion node, onion node with circuitID [%s] might have disconnected, something might have went wrong", onionNode.localAddr, input.CircuitID)
 		print.Debug(print.ONION_NODE, "SendError", msg, nil)
-
 	}
+
 	return nil
 }
 
@@ -444,7 +430,7 @@ func (t *OnionRPC) SendResponse(input resource.ResponseMessage, output *bool) er
 	circuitDirectory.RUnlock()
 
 	if parentExists {
-		//Encrypt with your shared key
+		//Encrypt message with your shared key
 		encryptedData, err := encryption.AESEncryptCTR(parentCircuitInfo.sharedKey, input.Data, encryption.GenerateIV())
 		if err != nil {
 			msg := fmt.Sprintf("[%s] received error from AESEncryptCTR, this shouldn't happen!", onionNode.localAddr.String())
@@ -457,10 +443,9 @@ func (t *OnionRPC) SendResponse(input resource.ResponseMessage, output *bool) er
 		input.Data = encryptedData
 
 		//Send to parent
-
 		connectionDirectory.RLock()
-
 		nodeConnection, exist := connectionDirectory.connectionMap[parentCircuitInfo.nodeAddress]
+
 		if exist {
 			nodeConnection.Go("OnionRPC.SendResponse", input, output, nil)
 		} else {
@@ -504,7 +489,6 @@ func (t *OnionRPC) ReceiveRelayMessage(input resource.RequestMessage, output *re
 		input.EncryptedData = decryptedData
 
 		//Send to child
-
 		connectionDirectory.RLock()
 		nodeConnection, exists := connectionDirectory.connectionMap[childCircuitInfo.nodeAddress]
 		connectionDirectory.RUnlock()
@@ -515,7 +499,6 @@ func (t *OnionRPC) ReceiveRelayMessage(input resource.RequestMessage, output *re
 			fmt.Println("DROPPING RELAY PACKET CHILD NOT THERE")
 			return nil
 		}
-
 	} else {
 		print.Info(print.ONION_NODE, "ReceiveRelayMessage", "cell digest is valid, handling packet as relay cell", nil)
 		relayCell := cells.DecodeRelayCell(decryptedData)
@@ -539,7 +522,6 @@ func (t *OnionRPC) ReceiveRelayMessage(input resource.RequestMessage, output *re
 		default:
 			print.Debug(print.ONION_NODE, "ReceiveRelayMessage", "unsupported relay cell command", relayCell.Command)
 		}
-
 	}
 
 	return nil
@@ -552,14 +534,10 @@ func (t *OnionRPC) ReceiveCreateRequest(input resource.RequestMessage, output *r
 
 	parentAddress := input.Address
 
-	fmt.Println("PLZ")
 	connectionDirectory.RLock()
-	fmt.Println("IM INSIDE")
 	_, exists := connectionDirectory.connectionMap[parentAddress]
-	fmt.Println("ABOUT TO LEAVE")
 	connectionDirectory.RUnlock()
 
-	fmt.Println("WTF", exists)
 	if !exists {
 		nodeConnection, err := rpc.Dial("tcp", input.Address)
 		if err != nil {
@@ -621,12 +599,10 @@ func (t *OnionRPC) ReceiveCreateRequest(input resource.RequestMessage, output *r
 
 	circuitDirectory.Lock()
 	if _, ok := circuitDirectory.circuitMap[input.CircuitID]; ok {
-		fmt.Println("This shouldn't get here")
 		circuitDirectory.Unlock()
 		return errorlib.CircuitIDAlreadyExistsError(input.CircuitID)
 	}
 	if _, ok := circuitDirectory.circuitMap[childCircuitID]; ok {
-		fmt.Println("Guess like it did get here")
 		circuitDirectory.Unlock()
 		return errorlib.CircuitIDAlreadyExistsError(childCircuitID)
 	}
@@ -694,8 +670,8 @@ func (t *OnionRPC) SendDestroyRequest(input resource.RequestMessage, output *str
 		print.Info(print.ONION_NODE, "SendDestroyRequest", "removing circuit (child)", childCircuitInfo.circuitID)
 		delete(circuitDirectory.circuitMap, childCircuitInfo.circuitID)
 	}
-	circuitDirectory.Unlock()
 
+	circuitDirectory.Unlock()
 	printAllCircuitInfo()
 	return nil
 }
@@ -743,7 +719,6 @@ func handleExtend(input resource.RequestMessage, output *resource.ResponseMessag
 	input.EncryptedData = relayCell.Data
 
 	//Send to child
-
 	connectionDirectory.RLock()
 	nodeConnection, stillExist := connectionDirectory.connectionMap[childAddress]
 	connectionDirectory.RUnlock()
@@ -754,12 +729,12 @@ func handleExtend(input resource.RequestMessage, output *resource.ResponseMessag
 		go channelListener(doneCall)
 
 		if !exists {
-			fmt.Println("SSSSS")
 			go sendOnionNodeHeartBeat(childAddress)
 			go checkOnionHeartBeats(childAddress)
 		}
 	} else {
-		fmt.Println("UHOHhhhhhhhh")
+		print.Error(print.ONION_NODE, err, "handleExtend")
+		return err
 	}
 
 	return nil
@@ -775,7 +750,6 @@ func handleTruncate(input resource.RequestMessage, output *resource.ResponseMess
 	circuitDirectory.Unlock()
 
 	// 2. Send Destroy message to child connection
-
 	if childExists {
 		input.Address = onionNode.localAddr.String()
 		input.CircuitID = childCircuitInfo.circuitID
@@ -863,11 +837,10 @@ func handleData(requestMessage resource.RequestMessage, responseMessage *resourc
 			modifiedPacketChunk := cells.EncodeDataResponsePayload(counter, 1, emptyPacket)
 			sendRelayCellHelper(cells.RESPONSE, modifiedPacketChunk, requestMessage.CircuitID)
 			return nil
-			//fmt.Printf("Sending packet [%d] of [%d]", counter, 1)
 		}
 
 		for len(body) > 0 {
-			// need to change packet size since less than limit
+			// need to change packet size when the size is less than limit
 			if len(body) < packetSize {
 				packetSize = len(body)
 			}
@@ -918,13 +891,12 @@ func closeTCPConnection(streamKey string) {
 
 // Sends relay cell back to this onion node's parent
 func sendRelayCellHelper(command cells.OnionCommand, payload []byte, parentCircuitID string) error {
-
 	//Get parentCircuitInfo
 	circuitDirectory.RLock()
 	childCircuitInfo, childExist := circuitDirectory.circuitMap[parentCircuitID]
+
 	if !childExist {
 		// child no longer exists, node has disconnected, simply drop the packet
-		fmt.Println("FICLWHY ME")
 		circuitDirectory.RUnlock()
 		return nil
 	}
@@ -939,9 +911,7 @@ func sendRelayCellHelper(command cells.OnionCommand, payload []byte, parentCircu
 			print.Debug(print.ONION_NODE, "sendRelayCellHelper", msg, err)
 		}
 
-		//Change response message
 		var output bool
-
 		responseMessage := resource.ResponseMessage{
 			CircuitID: parentCircuitInfo.circuitID,
 			IsRelay:   true,
@@ -1000,7 +970,6 @@ func createHttpClientWrapper(streamKey, webAddress string) (*HttpClientWrapper, 
 	}
 
 	resp.Body.Close()
-
 	return &HttpClientWrapper{httpClient, webAddress}, nil
 }
 
@@ -1008,12 +977,12 @@ func createHttpClientWrapper(streamKey, webAddress string) (*HttpClientWrapper, 
 func connectToAvailableServer() {
 	err := onionNode.serverConnection.Close()
 	if err != nil {
-		fmt.Println(err) // TODO: replace this with the proper debugging print
+		print.Error(print.ONION_NODE, err, "connectToAvailableServer")
 	}
 
 	serverAddress, err := resource.ChooseRandomServer()
 	if err != nil {
-		fmt.Println(err) // TODO: replace this with the proper debugging print
+		print.Error(print.ONION_NODE, err, "connectToAvailableServer")
 	}
 
 	serverConnection, err := rpc.Dial("tcp", serverAddress)
@@ -1041,14 +1010,13 @@ func printCircuitInfo(cirInfo *CircuitInfo) {
 	fmt.Printf("circuit id: [%s]\n", cirInfo.circuitID)
 	fmt.Printf("shared key: [%x]\n", cirInfo.sharedKey)
 	fmt.Printf("node      : [%s]\n", cirInfo.nodeAddress)
-	fmt.Printf("isParent : [%t]\n", cirInfo.isParent)
+	fmt.Printf("isParent  : [%t]\n", cirInfo.isParent)
 }
 
 // Check for critical error - Exit program
 func checkCriticalError(err error, msg string) {
 	if err != nil {
-		fmt.Println()
-		fmt.Println("[CRITICAL ERROR][onion-node]: ", msg, err)
+		fmt.Println("\n[CRITICAL ERROR][onion-node]: ", msg, err)
 		os.Exit(1)
 	}
 }
